@@ -1,0 +1,21 @@
+{
+  "default_branch": "develop",
+  "branches": [
+    "develop",
+    "feat/owner-only-access-control",
+    "origin",
+    "recovery"
+  ],
+  "parent": {
+    "develop": null,
+    "feat/owner-only-access-control": "develop",
+    "origin": "develop",
+    "recovery": "develop"
+  },
+  "order": [
+    "develop",
+    "feat/owner-only-access-control",
+    "origin",
+    "recovery"
+  ]
+}

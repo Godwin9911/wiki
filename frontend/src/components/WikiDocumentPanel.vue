@@ -12,6 +12,19 @@
 				{{ __('View Page') }}
 			</Button>
 			<Button
+				v-if="!readonly && userStore.isAdmin"
+				:variant="wikiDoc.doc?.owner_only ? 'solid' : 'outline'"
+				:theme="wikiDoc.doc?.owner_only ? 'red' : 'gray'"
+				:loading="wikiDoc.setValue.loading"
+				:title="__('Toggle Owner Only')"
+				@click="toggleOwnerOnly"
+			>
+				<template #prefix>
+					<span class="lucide-lock size-4" aria-hidden="true" />
+				</template>
+				{{ __('Owner Only') }}
+			</Button>
+			<Button
 				v-if="!readonly"
 				:variant="canPublish ? 'outline' : 'solid'"
 				:loading="isSaving"
@@ -525,6 +538,19 @@ async function togglePublish() {
 
 function openPage() {
 	window.open(`/${wikiDoc.value.doc.route}`, '_blank');
+}
+
+// Quick header toggle -- a second entry point to the same field
+// PageSettings.vue's switch saves, for when Owner Only is all you want to
+// change and opening full Page Settings is overkill.
+async function toggleOwnerOnly() {
+	try {
+		await wikiDoc.value.setValue.submit({
+			owner_only: wikiDoc.value.doc?.owner_only ? 0 : 1,
+		});
+	} catch (error) {
+		toast.error(error.messages?.[0] || __('Error updating Owner Only'));
+	}
 }
 
 function saveFromHeader() {

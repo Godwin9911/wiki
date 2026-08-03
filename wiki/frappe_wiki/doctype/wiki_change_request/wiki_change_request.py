@@ -639,8 +639,11 @@ def archive_change_request(name: str) -> None:
 
 @frappe.whitelist()
 def get_cr_tree(name: str) -> dict[str, Any]:
+	from wiki.permissions import _ancestor_owner_only_blocks, _document_owner_only_blocks, _is_manager
+
 	cr = frappe.get_doc("Wiki Change Request", name)
 	cr.check_permission("read")
+	user = frappe.session.user
 
 	root_group = frappe.db.get_value("Wiki Space", cr.wiki_space, "root_group")
 	operation_version = int(cr.operation_version or 0)
@@ -679,7 +682,7 @@ def get_cr_tree(name: str) -> dict[str, Any]:
 
 	doc_names = frappe.get_all(
 		"Wiki Document",
-		fields=["name", "doc_key", "route"],
+		fields=["name", "doc_key", "route", "owner_only", "owner", "parent_wiki_document"],
 		filters={"doc_key": ("in", list(doc_map.keys()))},
 	)
 	doc_name_map = {row["doc_key"]: row for row in doc_names}
@@ -688,6 +691,9 @@ def get_cr_tree(name: str) -> dict[str, Any]:
 		if mapped:
 			node["document_name"] = mapped.get("name")
 			node["route"] = mapped.get("route")
+			node["owner_only"] = mapped.get("owner_only")
+			node["owner"] = mapped.get("owner")
+			node["parent_wiki_document"] = mapped.get("parent_wiki_document")
 
 	change_map = {
 		change.get("doc_key"): change.get("change_type")
@@ -707,16 +713,33 @@ def get_cr_tree(name: str) -> dict[str, Any]:
 			node["children"] = sort_children(children)
 		return nodes
 
+	def prune_owner_only(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+		"""Drop Owner Only nodes (and their whole subtree) for a non-owner/non-admin.
+
+		Drafted-but-not-yet-inserted items have no document_name, hence nothing
+		to check, and stay visible -- they can't be Owner Only yet.
+		"""
+		if _is_manager(user):
+			return nodes
+		filtered_nodes = []
+		for node in nodes:
+			if node.get("document_name") and (
+				_document_owner_only_blocks(node, user) or _ancestor_owner_only_blocks(node, user)
+			):
+				continue
+			node["children"] = prune_owner_only(node.get("children") or [])
+			filtered_nodes.append(node)
+		return filtered_nodes
+
 	if root_key and root_key in doc_map:
-		children = sort_children(doc_map[root_key]["children"])
+		children = sort_children(prune_owner_only(doc_map[root_key]["children"]))
 	else:
-		children = sort_children(
-			[
-				node
-				for node in doc_map.values()
-				if not node.get("parent_key") or node.get("parent_key") not in doc_map
-			]
-		)
+		top_level = [
+			node
+			for node in doc_map.values()
+			if not node.get("parent_key") or node.get("parent_key") not in doc_map
+		]
+		children = sort_children(prune_owner_only(top_level))
 
 	return {
 		"children": children,

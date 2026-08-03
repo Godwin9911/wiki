@@ -50,7 +50,12 @@ def _filter_hits_by_space_visibility(hits: list[dict]) -> list[dict]:
 	user (`check_space_access`). Orphan documents (no wiki_space) stay
 	readable by all, subject to the same document-level Owner Only check.
 	"""
-	from wiki.permissions import _document_owner_only_blocks, _is_manager, can_read_space
+	from wiki.permissions import (
+		_ancestor_owner_only_blocks,
+		_document_owner_only_blocks,
+		_is_manager,
+		can_read_space,
+	)
 
 	names = [hit["name"] for hit in hits]
 	if not names:
@@ -61,7 +66,7 @@ def _filter_hits_by_space_visibility(hits: list[dict]) -> list[dict]:
 		for row in frappe.get_all(
 			"Wiki Document",
 			filters={"name": ("in", names)},
-			fields=["name", "wiki_space", "owner_only", "owner"],
+			fields=["name", "wiki_space", "owner_only", "owner", "parent_wiki_document"],
 		)
 	}
 
@@ -80,7 +85,10 @@ def _filter_hits_by_space_visibility(hits: list[dict]) -> list[dict]:
 		doc = doc_by_name.get(hit["name"])
 		if not doc:
 			continue
-		if _document_owner_only_blocks(doc, frappe.session.user) and not is_manager:
+		if not is_manager and (
+			_document_owner_only_blocks(doc, frappe.session.user)
+			or _ancestor_owner_only_blocks(doc, frappe.session.user)
+		):
 			continue
 		if not doc.wiki_space or _is_visible(doc.wiki_space):
 			allowed.append(hit)

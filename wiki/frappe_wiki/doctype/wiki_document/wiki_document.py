@@ -362,7 +362,13 @@ class WikiDocument(NestedSet):
 		so we don't leak the existence of restricted pages to unauthorized users
 		(especially anonymous Guests).
 		"""
-		from wiki.permissions import _document_owner_only_blocks, _is_manager, can_read_space, can_write_space
+		from wiki.permissions import (
+			_ancestor_owner_only_blocks,
+			_document_owner_only_blocks,
+			_is_manager,
+			can_read_space,
+			can_write_space,
+		)
 
 		user = user or frappe.session.user
 
@@ -373,8 +379,11 @@ class WikiDocument(NestedSet):
 				frappe.throw(_("Page not found"), frappe.DoesNotExistError)
 
 		# Document-level Owner Only applies regardless of whether the document
-		# belongs to a space (orphan documents can be Owner Only too).
-		if _document_owner_only_blocks(self, user) and not _is_manager(user):
+		# belongs to a space (orphan documents can be Owner Only too). An
+		# ancestor group's Owner Only flag blocks the same way.
+		if not _is_manager(user) and (
+			_document_owner_only_blocks(self, user) or _ancestor_owner_only_blocks(self, user)
+		):
 			frappe.throw(_("Page not found"), frappe.DoesNotExistError)
 
 	def check_guest_access(self):
@@ -766,8 +775,9 @@ def build_nested_wiki_tree(documents: list[str]):
 			"sort_order",
 			"is_external_link",
 			"external_url",
+			"owner_only",
 		],
-		filters={"name": ("in", documents), "owner_only": ("!=", 1)},
+		filters={"name": ("in", documents)},
 		or_filters={"is_published": 1, "is_group": 1},
 		order_by="lft asc",
 	)
@@ -786,6 +796,21 @@ def build_nested_wiki_tree(documents: list[str]):
 		else:
 			# This is a root node (parent not in our dataset)
 			root_nodes.append(doc_map[doc["name"]])
+
+	# Drop Owner Only nodes and, since they're still nested inside their
+	# parent's "children" here (unlike the old owner_only!=1 SQL filter, which
+	# dropped only the row itself and let its children leak in as orphaned
+	# roots), their whole subtree goes with them.
+	def prune_owner_only(nodes):
+		filtered_nodes = []
+		for node in nodes:
+			if node.get("owner_only"):
+				continue
+			node["children"] = prune_owner_only(node["children"])
+			filtered_nodes.append(node)
+		return filtered_nodes
+
+	root_nodes = prune_owner_only(root_nodes)
 
 	# Sort children by sort_order at each level
 	def sort_children(nodes):

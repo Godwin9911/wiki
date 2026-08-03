@@ -115,8 +115,9 @@ def _space_owner_only_blocks(space, user=None) -> bool:
 def _document_owner_only_blocks(doc, user=None) -> bool:
 	"""True if the document's own Owner Only flag hides it from `user`.
 
-	Only consults the document's own field -- space-level blocking is handled
-	separately (_space_owner_only_blocks) so the two OR together.
+	Only consults the document's own field -- space-level and ancestor-group
+	blocking are handled separately (_space_owner_only_blocks,
+	_ancestor_owner_only_blocks) so all three OR together.
 	"""
 	user = user or frappe.session.user
 	owner_only = doc.get("owner_only") if hasattr(doc, "get") else None
@@ -126,6 +127,30 @@ def _document_owner_only_blocks(doc, user=None) -> bool:
 	if user == doc_owner:
 		return False
 	return "Admin" not in _user_roles(user)
+
+
+def _ancestor_owner_only_blocks(doc, user=None) -> bool:
+	"""True if any ancestor group's Owner Only flag hides `doc` from `user`.
+
+	Walks parent_wiki_document via cached lookups (Redis-backed, so cheap
+	even across several levels) rather than lft/rgt, since this also runs
+	against in-memory (uninserted) docs in tests, which have no NestedSet
+	bounds yet but do have parent_wiki_document set directly.
+	"""
+	user = user or frappe.session.user
+	parent = doc.get("parent_wiki_document") if hasattr(doc, "get") else None
+	seen = set()
+	while parent and parent not in seen:
+		seen.add(parent)
+		values = frappe.get_cached_value(
+			"Wiki Document", parent, ["owner_only", "owner", "parent_wiki_document"]
+		)
+		if not values:
+			break
+		owner_only, doc_owner, parent = values
+		if owner_only and user != doc_owner and "Admin" not in _user_roles(user):
+			return True
+	return False
 
 
 def can_read_space(space, user=None) -> bool:
@@ -304,14 +329,24 @@ def wiki_document_query_conditions(user=None, doctype=None):
 		f"or `tabWiki Document`.`owner_only` is null "
 		f"or `tabWiki Document`.`owner` = {escaped_user})"
 	)
-	return f"({space_clause}) and ({owner_only_clause})"
+	ancestor_clause = (
+		"not exists ("
+		"select 1 from `tabWiki Document` anc "
+		"where anc.lft < `tabWiki Document`.lft "
+		"and anc.rgt > `tabWiki Document`.rgt "
+		f"and anc.owner_only = 1 and anc.owner != {escaped_user}"
+		")"
+	)
+	return f"({space_clause}) and ({owner_only_clause}) and ({ancestor_clause})"
 
 
 def wiki_document_has_permission(doc, ptype, user=None):
 	user = user or frappe.session.user
 	if user == "Guest":
 		return False
-	if _document_owner_only_blocks(doc, user) and not _is_manager(user):
+	if not _is_manager(user) and (
+		_document_owner_only_blocks(doc, user) or _ancestor_owner_only_blocks(doc, user)
+	):
 		return False
 
 	space = doc.wiki_space

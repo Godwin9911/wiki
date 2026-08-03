@@ -310,7 +310,7 @@ class TestWikiSpacePermissions(IntegrationTestCase):
 
 	# --- Owner Only: Wiki Document ---------------------------------------
 
-	def _make_document(self, title, wiki_space=None, owner_only=0, owner=None):
+	def _make_document(self, title, wiki_space=None, owner_only=0, owner=None, parent_wiki_document=None):
 		"""An in-memory (never inserted) Wiki Document -- has_permission only reads
 		attributes off the object, so no DB round-trip is needed for those checks."""
 		return frappe.get_doc(
@@ -320,11 +320,24 @@ class TestWikiSpacePermissions(IntegrationTestCase):
 				"wiki_space": wiki_space,
 				"owner_only": owner_only,
 				"owner": owner or frappe.session.user,
+				"parent_wiki_document": parent_wiki_document,
 			}
 		)
 
-	def _insert_document(self, title, wiki_space=None, owner_only=0, owner=None):
-		doc = self._make_document(title, wiki_space, owner_only, owner).insert(ignore_permissions=True)
+	def _insert_document(
+		self, title, wiki_space=None, owner_only=0, owner=None, is_group=0, parent_wiki_document=None
+	):
+		doc = frappe.get_doc(
+			{
+				"doctype": "Wiki Document",
+				"title": title,
+				"wiki_space": wiki_space,
+				"owner_only": owner_only,
+				"owner": owner or frappe.session.user,
+				"is_group": is_group,
+				"parent_wiki_document": parent_wiki_document,
+			}
+		).insert(ignore_permissions=True)
 		self._docs.append(doc.name)
 		return doc
 
@@ -433,6 +446,86 @@ class TestWikiSpacePermissions(IntegrationTestCase):
 		finally:
 			frappe.db.set_value("Wiki Space", self.open_space, "owner_only", 0)
 			frappe.clear_document_cache("Wiki Space", self.open_space)
+
+	# --- Owner Only: Group (cascades to descendants) ----------------------
+
+	def test_owner_only_group_cascades_to_child_has_permission(self):
+		group = self._insert_document(
+			"Owner Only Group", wiki_space=self.open_space, owner_only=1, owner=self.reader, is_group=1
+		)
+		# The child's own flag is unset and it's owned by someone else -- only
+		# the group's flag should be doing the blocking here.
+		child = self._make_document(
+			"Child of owner-only group",
+			wiki_space=self.open_space,
+			owner_only=0,
+			owner=self.writer,
+			parent_wiki_document=group.name,
+		)
+		self.assertFalse(wiki_document_has_permission(child, "read", self.technician))
+		self.assertFalse(wiki_document_has_permission(child, "read", self.writer))
+		self.assertTrue(wiki_document_has_permission(child, "read", self.reader))
+		self.assertTrue(wiki_document_has_permission(child, "read", self.admin))
+
+	def test_owner_only_group_does_not_block_via_unrelated_document(self):
+		# A parent_wiki_document that isn't itself Owner Only shouldn't block.
+		group = self._insert_document(
+			"Plain Group", wiki_space=self.open_space, owner_only=0, is_group=1
+		)
+		child = self._make_document(
+			"Child of plain group",
+			wiki_space=self.open_space,
+			owner_only=0,
+			owner=self.writer,
+			parent_wiki_document=group.name,
+		)
+		self.assertTrue(wiki_document_has_permission(child, "read", self.technician))
+
+	def test_owner_only_group_cascades_to_child_in_list(self):
+		group = self._insert_document(
+			"Owner Only Group Listed",
+			wiki_space=self.open_space,
+			owner_only=1,
+			owner=self.reader,
+			is_group=1,
+		)
+		child = self._insert_document(
+			"Child Listed",
+			wiki_space=self.open_space,
+			owner_only=0,
+			owner=self.writer,
+			parent_wiki_document=group.name,
+		)
+
+		frappe.set_user(self.technician)
+		names = {d.name for d in frappe.get_list("Wiki Document", limit=0)}
+		self.assertNotIn(child.name, names)
+
+		frappe.set_user(self.reader)
+		names = {d.name for d in frappe.get_list("Wiki Document", limit=0)}
+		self.assertIn(child.name, names)
+
+	def test_owner_only_grandchild_also_blocked(self):
+		"""Cascading isn't limited to one level -- a grandchild is blocked too."""
+		group = self._insert_document(
+			"Owner Only Grandparent", wiki_space=self.open_space, owner_only=1, owner=self.reader, is_group=1
+		)
+		subgroup = self._insert_document(
+			"Subgroup",
+			wiki_space=self.open_space,
+			owner_only=0,
+			is_group=1,
+			parent_wiki_document=group.name,
+		)
+		grandchild = self._make_document(
+			"Grandchild",
+			wiki_space=self.open_space,
+			owner_only=0,
+			owner=self.writer,
+			parent_wiki_document=subgroup.name,
+		)
+		self.assertFalse(wiki_document_has_permission(grandchild, "read", self.technician))
+		self.assertTrue(wiki_document_has_permission(grandchild, "read", self.reader))
 
 
 class TestSpaceRolesAPI(IntegrationTestCase):

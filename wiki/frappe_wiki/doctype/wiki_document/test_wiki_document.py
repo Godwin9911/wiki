@@ -2414,6 +2414,34 @@ class TestWikiTreeCache(WikiDocumentTestBase):
 		tree = get_public_wiki_tree(root.name)
 		self.assertEqual([n["title"] for n in tree], ["Reorder B", "Reorder A"])
 
+	def test_owner_only_group_removed_with_its_subtree_not_orphaned(self):
+		"""An Owner Only group must disappear along with its children -- not just
+		its own row, leaving the children to leak in as orphaned root nodes."""
+
+		def _all_titles(nodes):
+			titles = []
+			for node in nodes:
+				titles.append(node["title"])
+				titles.extend(_all_titles(node["children"]))
+			return titles
+
+		root = create_test_wiki_document(self, "OwnerOnlyTree Root", is_group=True)
+		hidden_group = create_test_wiki_document(
+			self, "Hidden Group", parent=root.name, is_group=True
+		)
+		frappe.db.set_value("Wiki Document", hidden_group.name, "owner_only", 1)
+		create_test_wiki_document(
+			self, "Child Of Hidden Group", parent=hidden_group.name, slug="ooht-child"
+		)
+		create_test_wiki_space(self, "OwnerOnlyTree Space", "ooht-space", root.name)
+
+		tree = get_public_wiki_tree(root.name)
+		titles = _all_titles(tree)
+		self.assertNotIn("Hidden Group", titles)
+		self.assertNotIn("Child Of Hidden Group", titles)
+		# In particular, the child must not have leaked in as a root sibling.
+		self.assertEqual(tree, [])
+
 
 class TestSearchPublishGating(WikiDocumentTestBase):
 	"""

@@ -824,6 +824,39 @@ class TestWikiChangeRequest(FrappeTestCase):
 		grandchild_keys = {node["doc_key"] for node in group_node.get("children") or []}
 		self.assertSetEqual(grandchild_keys, {child_key})
 
+	def test_get_cr_tree_hides_owner_only_group_and_descendants(self):
+		space = create_test_wiki_space()
+		owner = create_user("cr-tree-owner@example.com", "Wiki User")
+		group = create_test_wiki_document(space.root_group, title="Hidden Group", is_group=1)
+		child = create_test_wiki_document(group.name, title="Hidden Child")
+		frappe.db.set_value("Wiki Document", group.name, {"owner_only": 1, "owner": owner.name})
+		frappe.clear_document_cache("Wiki Document", group.name)
+		cr = create_change_request(space.name, "CR owner-only tree")
+
+		group_key = frappe.get_value("Wiki Document", group.name, "doc_key")
+		child_key = frappe.get_value("Wiki Document", child.name, "doc_key")
+
+		other = create_user("cr-tree-other@example.com", "Wiki User")
+		frappe.set_user(other.name)
+		try:
+			tree = get_cr_tree(cr.name)
+			child_keys = {node["doc_key"] for node in tree.get("children") or []}
+			self.assertNotIn(group_key, child_keys)
+		finally:
+			frappe.set_user("Administrator")
+
+		frappe.set_user(owner.name)
+		try:
+			tree = get_cr_tree(cr.name)
+			children = tree.get("children") or []
+			child_keys = {node["doc_key"] for node in children}
+			self.assertIn(group_key, child_keys)
+			group_node = next(n for n in children if n["doc_key"] == group_key)
+			grandchild_keys = {n["doc_key"] for n in group_node.get("children") or []}
+			self.assertIn(child_key, grandchild_keys)
+		finally:
+			frappe.set_user("Administrator")
+
 	def test_list_change_requests_filters_by_status(self):
 		space = create_test_wiki_space()
 		create_test_wiki_document(space.root_group, title="Page A")

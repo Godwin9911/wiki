@@ -22,6 +22,7 @@ export function normalizeNode(serverNode, parentKey = null) {
 		isPublished: toPublished(serverNode.is_published),
 		isExternalLink: !!serverNode.is_external_link,
 		externalUrl: serverNode.external_url || null,
+		ownerOnly: !!serverNode.owner_only,
 		children,
 		localStatus: null,
 	};
@@ -41,6 +42,7 @@ export function denormalizeNode(node) {
 		is_published: node.isPublished,
 		is_external_link: node.isExternalLink,
 		external_url: node.externalUrl,
+		owner_only: node.ownerOnly,
 		order_index: node.orderIndex,
 		children: node.children.map(denormalizeNode),
 		local_status: node.localStatus,

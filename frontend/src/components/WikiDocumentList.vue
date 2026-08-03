@@ -60,6 +60,7 @@
 				@edit-external-link="openEditExternalLinkDialog"
 				@tab-settings="openTabSettingsDialog"
 				@convert-to-tab="openConvertTabDialog"
+				@owner-only-settings="openGroupSettingsDialog"
 				@drag-state-change="handleDragStateChange"
 			/>
 		</div>
@@ -257,6 +258,13 @@
 				</div>
 			</template>
 		</Dialog>
+
+		<GroupSettings
+			v-if="groupSettingsDocResource?.doc"
+			v-model="showGroupSettingsDialog"
+			:doc-resource="groupSettingsDocResource"
+			@saved="onGroupSettingsSaved"
+		/>
 	</div>
 </template>
 
@@ -265,9 +273,10 @@ import { useTreeDialogs } from '@/composables/useTreeDialogs';
 import { useTreeSearch } from '@/composables/useTreeSearch';
 import { useDraftWorkspaceStore } from '@/stores/draftWorkspace';
 import { useStorage } from '@vueuse/core';
-import { Dropdown, ErrorMessage, FormControl } from 'frappe-ui';
-import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue';
+import { createDocumentResource, Dropdown, ErrorMessage, FormControl } from 'frappe-ui';
+import { computed, onBeforeUnmount, ref, shallowRef, toRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import GroupSettings from './GroupSettings.vue';
 import IconPicker from './IconPicker.vue';
 import SpaceIcon from './SpaceIcon.vue';
 import WikiTree from './WikiTree.vue';
@@ -458,6 +467,31 @@ watch(
 
 function handleDragStateChange(isDragging) {
 	isDragActive.value = isDragging;
+}
+
+// Owner Only is a direct, immediate save (mirrors the page-level toggle in
+// PageSettings.vue) -- deliberately outside the draft/change-request
+// workflow that useTreeDialogs/draftStore own, since it's a permission flag
+// rather than content. A group's Wiki Document isn't already loaded the way
+// an open page is, so build the resource fresh each time the dialog opens.
+const showGroupSettingsDialog = ref(false);
+const groupSettingsDocResource = shallowRef(null);
+const groupSettingsDocKey = ref(null);
+
+function openGroupSettingsDialog(node) {
+	if (!node.document_name) return;
+	groupSettingsDocKey.value = node.doc_key;
+	groupSettingsDocResource.value = createDocumentResource({
+		doctype: 'Wiki Document',
+		name: node.document_name,
+		auto: true,
+	});
+	showGroupSettingsDialog.value = true;
+}
+
+function onGroupSettingsSaved(ownerOnly) {
+	const node = draftStore.findNode(groupSettingsDocKey.value);
+	if (node) node.ownerOnly = ownerOnly;
 }
 
 // The header's "Add Article"/"Add Group" links land here with ?new=page or

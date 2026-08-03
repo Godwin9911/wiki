@@ -65,6 +65,9 @@
 				<Badge v-else-if="!node.is_group && !node.is_published" variant="subtle" theme="orange" size="sm">
 					{{ __('Not Published') }}
 				</Badge>
+				<Badge v-else-if="userStore.isAdmin && node.owner_only" variant="subtle" theme="red" size="sm">
+					{{ __('Owner Only') }}
+				</Badge>
 
 				<!-- Hover-reveal on desktop; always visible on touch (no hover)
 				     so row actions stay reachable on a phone. -->
@@ -83,11 +86,14 @@
 <script setup>
 import { highlightSegments } from '@/composables/useTreeSearch';
 import { useDraftWorkspaceStore } from '@/stores/draftWorkspace';
+import { useUserStore } from '@/stores/user';
 import SpaceIcon from './SpaceIcon.vue';
 import { useStorage } from '@vueuse/core';
 import { Badge, Button, Dropdown, Tree, toast } from 'frappe-ui';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+
+const userStore = useUserStore();
 
 const props = defineProps({
 	items: {
@@ -145,6 +151,7 @@ const emit = defineEmits([
 	'edit-external-link',
 	'tab-settings',
 	'convert-to-tab',
+	'owner-only-settings',
 	'drag-state-change',
 ]);
 
@@ -359,6 +366,19 @@ function getDropdownOptions(node) {
 				},
 			],
 		);
+
+		// document_name is only set once the group is backed by a real Wiki
+		// Document (not a draft-only, not-yet-synced create) -- Owner Only has
+		// nothing to attach a resource to until then. Gate the option's very
+		// existence, not just its contents: unlike Page Settings, this dialog has
+		// nothing else in it for a non-admin to see.
+		if (userStore.isAdmin && node.document_name) {
+			options.push({
+				label: __('Owner Only'),
+				icon: 'lock',
+				onClick: () => emit('owner-only-settings', node),
+			});
+		}
 
 		// Only top-level groups can be tabs, so don't offer an action the
 		// backend would reject. Editor-only, mirroring can_manage_tabs.

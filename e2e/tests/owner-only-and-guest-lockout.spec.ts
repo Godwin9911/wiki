@@ -207,3 +207,157 @@ test.describe('Owner Only', () => {
 		await technicianContext.close();
 	});
 });
+
+test.describe('Owner Only — Group', () => {
+	const route = `owner-only-group-${Date.now()}`;
+	let space: WikiSpace;
+	let group: WikiDocument;
+	let child: WikiDocument;
+	let technicianEmail: string;
+	const technicianPassword = 'OwnerOnlyGroupE2E!23';
+
+	// Reuse the same three-dot menu -> menuitem interaction change-request-flow.spec.ts
+	// uses for group rows (there's no named "More actions" button for a group
+	// the way there is for an open page, only the icon-only trailing button).
+	async function openGroupMenu(page: import('@playwright/test').Page, title: string) {
+		const groupItem = page
+			.locator('aside [role="treeitem"]', { hasText: title })
+			.first();
+		await groupItem.hover();
+		await groupItem.locator('> div').first().locator('button').last().click();
+	}
+
+	test.beforeAll(async ({ request }) => {
+		space = await createTestWikiSpace(request, { route, is_published: true });
+		const spaceDoc = await getDoc<{ root_group: string }>(
+			request,
+			'Wiki Space',
+			space.name,
+		);
+		group = await createTestWikiDocument(request, {
+			title: 'Owner Only Group',
+			is_group: true,
+			wiki_space: space.name,
+			parent_wiki_document: spaceDoc.root_group,
+		});
+		child = await createTestWikiDocument(request, {
+			title: 'Child Of Owner Only Group',
+			route: `${route}/child-page`,
+			is_published: true,
+			wiki_space: space.name,
+			parent_wiki_document: group.name,
+		});
+
+		await createDoc(request, 'Has Role', {
+			parent: 'Administrator',
+			parenttype: 'User',
+			parentfield: 'roles',
+			role: 'Admin',
+		}).catch(() => {
+			// Already has the role from a previous run -- fine.
+		});
+
+		technicianEmail = `wiki-e2e-group-technician-${Date.now()}@example.com`;
+		await createDoc(request, 'User', {
+			email: technicianEmail,
+			first_name: 'E2E Group Technician',
+			send_welcome_email: 0,
+			new_password: technicianPassword,
+		});
+		await createDoc(request, 'Has Role', {
+			parent: technicianEmail,
+			parenttype: 'User',
+			parentfield: 'roles',
+			role: 'Technician',
+		});
+	});
+
+	test.afterAll(async ({ request }) => {
+		await cleanupWikiSpacesByRoute(request, route);
+	});
+
+	test('Admin toggles Owner Only on a Group via its dropdown menu and sees the badge', async ({
+		page,
+	}) => {
+		await page.setViewportSize({ width: 1200, height: 900 });
+		await page.goto(appUrl('spaces', space.name));
+		await page.waitForLoadState('networkidle');
+
+		await openGroupMenu(page, group.title);
+		await page.getByRole('menuitem', { name: 'Owner Only' }).click();
+
+		const dialog = page.getByRole('dialog');
+		await expect(dialog).toBeVisible({ timeout: 10000 });
+
+		const ownerOnlySwitch = dialog.getByRole('switch').first();
+		await expect(ownerOnlySwitch).toBeVisible();
+		await ownerOnlySwitch.click();
+
+		const saveButton = dialog.getByRole('button', { name: 'Save', exact: true });
+		await expect(saveButton).toBeEnabled();
+		await saveButton.click();
+		await expect(saveButton).toBeDisabled({ timeout: 10000 });
+		await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+		const groupItem = page
+			.locator('aside [role="treeitem"]', { hasText: group.title })
+			.first();
+		await expect(groupItem.getByText('Owner Only', { exact: true })).toBeVisible({
+			timeout: 10000,
+		});
+	});
+
+	test('Technician sees no trace of the group or its child in the editor tree or by direct URL, and access is restored after toggling off', async ({
+		page,
+		browser,
+	}) => {
+		const technicianContext = await browser.newContext({ storageState: undefined });
+		const loginResponse = await technicianContext.request.post('/api/method/login', {
+			form: { usr: technicianEmail, pwd: technicianPassword },
+		});
+		expect(loginResponse.ok()).toBeTruthy();
+		const technicianPage = await technicianContext.newPage();
+		await technicianPage.setViewportSize({ width: 1200, height: 900 });
+
+		// Gone from the space-management (editor) sidebar tree, not just the
+		// public reader nav -- this is the gap this feature closes (get_cr_tree
+		// previously applied no per-document Owner Only filtering at all).
+		await technicianPage.goto(appUrl('spaces', space.name));
+		await technicianPage.waitForLoadState('networkidle');
+		await expect(
+			technicianPage.locator('aside').getByText(group.title, { exact: true }),
+		).toHaveCount(0);
+		await expect(
+			technicianPage.locator('aside').getByText(child.title, { exact: true }),
+		).toHaveCount(0);
+
+		// Direct URL to the child: denied, same 404 shape as nonexistent --
+		// cascaded from the group's flag even though the child's own is unset.
+		await technicianPage.goto(`/${child.route}`);
+		await expect(
+			technicianPage.getByText(/page not found/i).first(),
+		).toBeVisible({ timeout: 10000 });
+
+		// Toggle off as Admin, then confirm the Technician regains access.
+		await page.setViewportSize({ width: 1200, height: 900 });
+		await page.goto(appUrl('spaces', space.name));
+		await page.waitForLoadState('networkidle');
+		await openGroupMenu(page, group.title);
+		await page.getByRole('menuitem', { name: 'Owner Only' }).click();
+		const dialog = page.getByRole('dialog');
+		await expect(dialog).toBeVisible({ timeout: 10000 });
+		const ownerOnlySwitch = dialog.getByRole('switch').first();
+		await ownerOnlySwitch.click();
+		const saveButton = dialog.getByRole('button', { name: 'Save', exact: true });
+		await expect(saveButton).toBeEnabled();
+		await saveButton.click();
+		await expect(saveButton).toBeDisabled({ timeout: 10000 });
+
+		await technicianPage.goto(`/${child.route}`);
+		await expect(technicianPage.getByText(child.title).first()).toBeVisible({
+			timeout: 10000,
+		});
+
+		await technicianContext.close();
+	});
+});

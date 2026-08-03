@@ -267,6 +267,7 @@ import { useDraftWorkspaceStore } from '@/stores/draftWorkspace';
 import { useStorage } from '@vueuse/core';
 import { Dropdown, ErrorMessage, FormControl } from 'frappe-ui';
 import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import IconPicker from './IconPicker.vue';
 import SpaceIcon from './SpaceIcon.vue';
 import WikiTree from './WikiTree.vue';
@@ -458,6 +459,24 @@ watch(
 function handleDragStateChange(isDragging) {
 	isDragActive.value = isDragging;
 }
+
+// The header's "Add Article"/"Add Group" links land here with ?new=page or
+// ?new=group and expect the create dialog to pop open. Mirrors the
+// github_app_created pattern in MainLayout.vue: watch (not onMounted) because
+// the app can still be resolving the initial route's query at mount time.
+const route = useRoute();
+const router = useRouter();
+watch(
+	() => route.query.new,
+	(mode) => {
+		if (props.readonly || (mode !== 'page' && mode !== 'group')) return;
+		openCreateDialog(props.rootNode, mode === 'group');
+		const query = { ...route.query };
+		delete query.new;
+		router.replace({ query });
+	},
+	{ immediate: true },
+);
 
 onBeforeUnmount(() => {
 	isDragActive.value = false;

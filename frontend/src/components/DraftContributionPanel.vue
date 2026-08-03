@@ -12,11 +12,20 @@
 
 				<div class="flex shrink-0 items-center gap-2">
 					<Button
-						variant="solid"
+						:variant="canPublish ? 'outline' : 'solid'"
 						:loading="isSaving"
 						@click="saveFromHeader"
 					>
 						{{ __('Save') }}
+					</Button>
+					<Button
+						v-if="canPublish"
+						variant="solid"
+						:loading="isPublishing || crStore.isMerging"
+						:title="__('Save and publish straight to the live page')"
+						@click="publishFromHeader"
+					>
+						{{ __('Publish') }}
 					</Button>
 					<Dropdown :options="menuOptions">
 						<Button variant="ghost" :title="__('More actions')">
@@ -126,6 +135,7 @@
 </template>
 
 <script setup>
+import { useSpaceCapabilities } from '@/composables/useSpaceCapabilities';
 import { useChangeRequestStore } from '@/stores/changeRequest';
 import { useDraftWorkspaceStore } from '@/stores/draftWorkspace';
 import {
@@ -155,16 +165,19 @@ const props = defineProps({
 	},
 });
 
-const emit = defineEmits(['refresh']);
+const emit = defineEmits(['refresh', 'publish']);
 const router = useRouter();
 const editorRef = ref(null);
 const editableTitle = ref('');
 const editableRoute = ref('');
 const showRouteDialog = ref(false);
 const isSavingRoute = ref(false);
+const isPublishing = ref(false);
 
 const crStore = useChangeRequestStore();
 const draftStore = useDraftWorkspaceStore();
+const { capabilities } = useSpaceCapabilities(() => props.spaceId);
+const canPublish = computed(() => capabilities.value.can_write);
 
 const crPage = ref(null);
 // Becomes true only once we've confirmed the page genuinely doesn't exist,
@@ -423,6 +436,28 @@ async function saveRoute(close) {
 
 function saveFromHeader() {
 	editorRef.value?.saveToDB();
+}
+
+// One-click publish: flush the current editor content and any other dirty
+// pages, then hand off to the parent to merge the change request and
+// navigate straight to the live page — no separate Save step required.
+async function publishFromHeader() {
+	isPublishing.value = true;
+	try {
+		const markdown = editorRef.value?.getMarkdown?.();
+		if (markdown !== undefined) {
+			await saveContent(markdown);
+		}
+		await flushOtherDirtyPages();
+		// A brand-new page's docKey is a tmp_* placeholder until its create
+		// resolves; the URL swap to the real key happens via a separate
+		// watcher that may not have caught up yet. Resolve it explicitly so
+		// the parent's post-merge tree lookup doesn't race that swap.
+		const realDocKey = await draftStore.resolveDocKey(props.docKey);
+		emit('publish', realDocKey || props.docKey);
+	} finally {
+		isPublishing.value = false;
+	}
 }
 
 async function saveContent(content) {

@@ -144,12 +144,8 @@
       </div>
 
       <div v-if="spaces.hasNextPage" class="flex px-2 py-2">
-        <Button
-          @click="() => spaces.next()"
-          :loading="spaces.list.loading"
-          :label="__('Load more')"
-          icon-left="refresh-cw"
-        />
+        <Button @click="() => spaces.next()" :loading="spaces.list.loading" :label="__('Load more')"
+          icon-left="refresh-cw" />
       </div>
     </div>
 
@@ -167,21 +163,11 @@
     >
       <template #default>
         <div class="flex flex-col gap-4">
-          <FormControl
-            type="text"
-            :label="__('Space Name')"
-            v-model="newSpace.space_name"
-            :placeholder="__('My Wiki Space')"
-          />
-          <FormControl
-            type="text"
-            :label="__('Route')"
-            required
-            :modelValue="newSpace.route"
-            @update:modelValue="handleRouteInput"
-            :placeholder="__('my-wiki-space')"
-            :description="__('The URL path for this wiki space (e.g., /my-wiki-space)')"
-          />
+          <FormControl type="text" :label="__('Space Name')" v-model="newSpace.space_name"
+            :placeholder="__('My Wiki Space')" />
+          <FormControl type="text" :label="__('Route')" required :modelValue="newSpace.route"
+            @update:modelValue="handleRouteInput" :placeholder="__('my-wiki-space')"
+            :description="__('The URL path for this wiki space (e.g., /my-wiki-space)')" />
 
           <FormControl
             type="checkbox"
@@ -684,10 +670,10 @@ const handleCreateSpace = () => {
 	const payload = {
 		space_name: newSpace.space_name,
 		route: newSpace.route,
-		// New spaces are published by default, so start them as public read.
-		// Guest covers everyone (anonymous + logged-in); admins can refine this
-		// in Space Settings → Permissions.
-		roles: [{ role: 'Guest', permission_level: 'Read' }],
+		// No role rows = open to all logged-in users (there's no public/anonymous
+		// option anymore -- Guest is never granted access). Admins can restrict
+		// this further in Space Settings → Permissions.
+		roles: [],
 	};
 
 	if (newSpace.git_synced) {

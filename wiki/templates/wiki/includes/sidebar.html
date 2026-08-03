@@ -64,8 +64,8 @@
     <!-- Hover zone -->
     <div class="w-8 h-full flex items-center justify-center">
         <button @click="$store.sidebar.toggle()"
-                class="inline-flex items-center justify-center p-1 transition-all duration-200 cursor-pointer focus:outline-none"
-                :class="$store.sidebar.isCollapsed ? 'opacity-100' : (hovered ? 'opacity-100 scale-100' : 'opacity-0 scale-75')">
+            class="inline-flex items-center justify-center p-1 transition-all duration-200 cursor-pointer focus:outline-none"
+            :class="$store.sidebar.isCollapsed ? 'opacity-100' : (hovered ? 'opacity-100 scale-100' : 'opacity-0 scale-75')">
             <svg class="w-4 h-4 text-[var(--ink-gray-4)] hover:text-[var(--ink-gray-6)] transition-colors duration-200"
                  :class="$store.sidebar.isCollapsed ? '' : 'rotate-180'"
                  xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -111,8 +111,8 @@
             // Only trigger if not in an input/textarea/contenteditable
             const target = e.target;
             const isInput = target.tagName === 'INPUT' ||
-                           target.tagName === 'TEXTAREA' ||
-                           target.isContentEditable;
+                target.tagName === 'TEXTAREA' ||
+                target.isContentEditable;
 
             if (!isInput && e.key.toLowerCase() === 's' && !e.metaKey && !e.ctrlKey && !e.altKey) {
                 Alpine.store('sidebar').toggle();
@@ -253,6 +253,15 @@
                     }
                 }
 
+                // Update published-by line
+                const publishedByEl = document.getElementById('wiki-published-by');
+                if (publishedByEl && data.published_by && data.published_on) {
+                    publishedByEl.textContent = `Published by ${data.published_by} on ${data.published_on}`;
+                    if (data.published_on_iso) {
+                        publishedByEl.setAttribute('title', data.published_on_iso);
+                    }
+                }
+
                 // Update TOC HTML with new headings, then reinitialize scroll spy
                 this.updateToc(data.toc_headings || []);
                 if (Alpine.store('toc')) {
@@ -381,11 +390,11 @@
             // Store expanded states with persistence
             expandedStates: Alpine.$persist({}),
             currentRoute: '{{ doc.route if doc else "" }}',
-            
+
             get isCollapsed() {
                 return this.$store.sidebar.isCollapsed;
             },
-            
+
             init() {
                 this.revealCurrentPage(this.currentRoute);
 
@@ -396,21 +405,21 @@
                     this.revealCurrentPage(route);
                 });
             },
-            
+
             toggleSidebar() {
                 this.$store.sidebar.toggle();
             },
-            
+
             toggleNode(nodeId) {
                 // Toggle the expanded state for this node
                 this.expandedStates[nodeId] = !this.expandedStates[nodeId];
             },
-            
+
             isExpanded(nodeId) {
                 // Return whether this node is expanded (default to false)
                 return this.expandedStates[nodeId] || false;
             },
-            
+
             revealCurrentPage(route) {
                 // Expand all parent groups of the current page, then scroll it into view
                 if (!route) return;

@@ -15,6 +15,7 @@ from wiki.permissions import (
 	_accessible_space_names,
 	_document_owner_only_blocks,
 	_is_manager,
+	_owner_only_bypass,
 	_space_owner_only_blocks,
 	can_contribute_to_space,
 	can_read_space,
@@ -526,6 +527,75 @@ class TestWikiSpacePermissions(IntegrationTestCase):
 		)
 		self.assertFalse(wiki_document_has_permission(grandchild, "read", self.technician))
 		self.assertTrue(wiki_document_has_permission(grandchild, "read", self.reader))
+
+	# --- Owner Only bypass scope: Admin/Administrator only, not managers --
+
+	def test_owner_only_bypass_helper_scope(self):
+		self.assertTrue(_owner_only_bypass("Administrator"))
+		self.assertTrue(_owner_only_bypass(self.admin))
+		self.assertFalse(_owner_only_bypass(self.manager))
+		self.assertFalse(_owner_only_bypass(self.technician))
+		self.assertFalse(_owner_only_bypass(self.reader))
+
+	def test_owner_only_document_blocks_wiki_manager_without_admin(self):
+		"""System Manager/Wiki Manager no longer see through Owner Only just by
+		holding that role -- only Admin/Administrator (or the owner) do."""
+		doc = self._make_document(
+			"Owner Only vs Manager", wiki_space=self.open_space, owner_only=1, owner=self.reader
+		)
+		self.assertTrue(_is_manager(self.manager))
+		self.assertFalse(wiki_document_has_permission(doc, "read", self.manager))
+		self.assertTrue(wiki_document_has_permission(doc, "read", "Administrator"))
+
+	def test_owner_only_document_absent_from_list_for_wiki_manager(self):
+		doc = self._insert_document(
+			"Owner Only Listed vs Manager", wiki_space=self.open_space, owner_only=1, owner=self.reader
+		)
+		frappe.set_user(self.manager)
+		names = {d.name for d in frappe.get_list("Wiki Document", limit=0)}
+		self.assertNotIn(doc.name, names)
+
+	def test_owner_only_space_blocks_wiki_manager_without_admin(self):
+		frappe.db.set_value("Wiki Space", self.open_space, "owner_only", 1)
+		frappe.db.set_value("Wiki Space", self.open_space, "owner", self.reader)
+		frappe.clear_document_cache("Wiki Space", self.open_space)
+		try:
+			self.assertFalse(can_read_space(self.open_space, self.manager))
+			self.assertTrue(can_read_space(self.open_space, "Administrator"))
+		finally:
+			frappe.db.set_value("Wiki Space", self.open_space, "owner_only", 0)
+			frappe.clear_document_cache("Wiki Space", self.open_space)
+
+	def test_owner_only_space_absent_from_list_for_wiki_manager(self):
+		frappe.db.set_value("Wiki Space", self.open_space, "owner_only", 1)
+		frappe.db.set_value("Wiki Space", self.open_space, "owner", self.reader)
+		frappe.clear_document_cache("Wiki Space", self.open_space)
+		try:
+			frappe.set_user(self.manager)
+			names = {s.name for s in frappe.get_list("Wiki Space", limit=0)}
+			self.assertNotIn(self.open_space, names)
+			# A manager still sees other (non-owner-only) spaces unfiltered.
+			self.assertIn(self.restricted, names)
+		finally:
+			frappe.db.set_value("Wiki Space", self.open_space, "owner_only", 0)
+			frappe.clear_document_cache("Wiki Space", self.open_space)
+
+	def test_owner_only_group_still_blocks_wiki_manager(self):
+		group = self._insert_document(
+			"Owner Only Group vs Manager",
+			wiki_space=self.open_space,
+			owner_only=1,
+			owner=self.reader,
+			is_group=1,
+		)
+		child = self._make_document(
+			"Child vs Manager",
+			wiki_space=self.open_space,
+			owner_only=0,
+			owner=self.writer,
+			parent_wiki_document=group.name,
+		)
+		self.assertFalse(wiki_document_has_permission(child, "read", self.manager))
 
 
 class TestSpaceRolesAPI(IntegrationTestCase):

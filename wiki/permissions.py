@@ -7,15 +7,20 @@ Read access  -> view a space + its pages and raise Change Requests.
 Write access -> additionally merge Change Requests. Write implies Read.
 
 A space with no role rows is open to all logged-in users (backward compatible).
-``System Manager``, ``Wiki Manager`` and ``Admin`` always have full access.
+``System Manager``, ``Wiki Manager`` and ``Admin`` always have full access to
+role-restricted spaces.
 
 Anonymous (``Guest``) access is never granted, regardless of space role
 configuration -- every hook entry point in this module rejects Guest outright.
 
 ``Owner Only`` is a layered restriction on top of the above: when a Wiki
-Document's or its Wiki Space's ``owner_only`` flag is set, the record is
-additionally hidden from everyone except its owner and ``Admin``-role users
-(see ``_document_owner_only_blocks`` / ``_space_owner_only_blocks``).
+Document's or its Wiki Space's ``owner_only`` flag is set (or an ancestor
+group's, for a document), the record is additionally hidden from everyone
+except its owner and the ``Administrator`` account / ``Admin``-role users
+(see ``_owner_only_bypass``, ``_document_owner_only_blocks``,
+``_ancestor_owner_only_blocks``, ``_space_owner_only_blocks``).
+Deliberately narrower than the manager bypass above: holding
+``System Manager``/``Wiki Manager`` alone does NOT see through Owner Only.
 """
 
 import frappe
@@ -95,6 +100,21 @@ def _user_roles(user=None) -> set:
 	return set(frappe.get_roles(user or frappe.session.user))
 
 
+def _owner_only_bypass(user=None) -> bool:
+	"""Whether `user` sees through Owner Only regardless of ownership.
+
+	Deliberately narrower than `_is_manager`: `System Manager`/`Wiki Manager`
+	do NOT bypass Owner Only just by holding those roles -- only the
+	`Administrator` account or the literal `Admin` role do, matching who can
+	see/toggle the field at all (its permlevel grants read/write to the
+	`Admin` permission row only).
+	"""
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	return "Admin" in _user_roles(user)
+
+
 def _space_owner_only_blocks(space, user=None) -> bool:
 	"""True if the space's own Owner Only flag hides it from `user`."""
 	user = user or frappe.session.user
@@ -109,7 +129,7 @@ def _space_owner_only_blocks(space, user=None) -> bool:
 		return False
 	if user == space_owner:
 		return False
-	return "Admin" not in _user_roles(user)
+	return not _owner_only_bypass(user)
 
 
 def _document_owner_only_blocks(doc, user=None) -> bool:
@@ -126,7 +146,7 @@ def _document_owner_only_blocks(doc, user=None) -> bool:
 	doc_owner = doc.get("owner") if hasattr(doc, "get") else None
 	if user == doc_owner:
 		return False
-	return "Admin" not in _user_roles(user)
+	return not _owner_only_bypass(user)
 
 
 def _ancestor_owner_only_blocks(doc, user=None) -> bool:
@@ -148,7 +168,7 @@ def _ancestor_owner_only_blocks(doc, user=None) -> bool:
 		if not values:
 			break
 		owner_only, doc_owner, parent = values
-		if owner_only and user != doc_owner and "Admin" not in _user_roles(user):
+		if owner_only and user != doc_owner and not _owner_only_bypass(user):
 			return True
 	return False
 
@@ -157,10 +177,12 @@ def can_read_space(space, user=None) -> bool:
 	user = user or frappe.session.user
 	if user == "Guest":
 		return False
-	if _is_manager(user):
-		return True
+	# Owner Only is checked before the manager bypass: System Manager/Wiki
+	# Manager no longer see through it just by holding that role.
 	if _space_owner_only_blocks(space, user):
 		return False
+	if _is_manager(user):
+		return True
 
 	levels = _space_role_levels(space)
 	if not levels:
@@ -175,10 +197,10 @@ def can_write_space(space, user=None) -> bool:
 	user = user or frappe.session.user
 	if user == "Guest":
 		return False
-	if _is_manager(user):
-		return True
 	if _space_owner_only_blocks(space, user):
 		return False
+	if _is_manager(user):
+		return True
 
 	levels = _space_role_levels(space)
 	if not levels:
@@ -255,7 +277,7 @@ def _accessible_space_names(user=None) -> set:
 	open_spaces = all_spaces - restricted_spaces
 	result = open_spaces | accessible_restricted
 
-	if "Admin" not in user_roles:
+	if not _owner_only_bypass(user):
 		owner_only_spaces = frappe.get_all(
 			"Wiki Space", filters={"owner_only": 1}, fields=["name", "owner"]
 		)
@@ -294,7 +316,16 @@ def wiki_space_query_conditions(user=None, doctype=None):
 	if user == "Guest":
 		return "1=0"
 	if _is_manager(user):
-		return ""
+		if _owner_only_bypass(user):
+			return ""
+		# A manager (System Manager/Wiki Manager, not Admin) still sees every
+		# space regardless of role restrictions, but Owner Only still applies.
+		escaped_user = frappe.db.escape(user)
+		return (
+			f"(`tabWiki Space`.`owner_only` = 0 "
+			f"or `tabWiki Space`.`owner_only` is null "
+			f"or `tabWiki Space`.`owner` = {escaped_user})"
+		)
 
 	names = _accessible_space_names(user)
 	if not names:
@@ -316,11 +347,13 @@ def wiki_document_query_conditions(user=None, doctype=None):
 	user = user or frappe.session.user
 	if user == "Guest":
 		return "1=0"
-	if _is_manager(user):
-		return ""
 
-	space_clause = _space_in_clause("tabWiki Document", user, allow_null=True)
-	if "Admin" in _user_roles(user):
+	# A manager (System Manager/Wiki Manager/Admin) skips the space-role
+	# restriction entirely; a non-manager gets the normal accessible-spaces
+	# clause. Either way, Owner Only + ancestor cascading below still apply
+	# unless the user is specifically Admin/Administrator.
+	space_clause = "" if _is_manager(user) else _space_in_clause("tabWiki Document", user, allow_null=True)
+	if _owner_only_bypass(user):
 		return space_clause
 
 	escaped_user = frappe.db.escape(user)
@@ -337,16 +370,20 @@ def wiki_document_query_conditions(user=None, doctype=None):
 		f"and anc.owner_only = 1 and anc.owner != {escaped_user}"
 		")"
 	)
-	return f"({space_clause}) and ({owner_only_clause}) and ({ancestor_clause})"
+	if space_clause:
+		return f"({space_clause}) and ({owner_only_clause}) and ({ancestor_clause})"
+	return f"({owner_only_clause}) and ({ancestor_clause})"
 
 
 def wiki_document_has_permission(doc, ptype, user=None):
 	user = user or frappe.session.user
 	if user == "Guest":
 		return False
-	if not _is_manager(user) and (
-		_document_owner_only_blocks(doc, user) or _ancestor_owner_only_blocks(doc, user)
-	):
+	# Owner Only/ancestor blocking is checked unconditionally -- these
+	# helpers already let Admin/Administrator and the actual owner through,
+	# so no separate manager bypass wraps them here (System Manager/Wiki
+	# Manager no longer see through Owner Only just by holding that role).
+	if _document_owner_only_blocks(doc, user) or _ancestor_owner_only_blocks(doc, user):
 		return False
 
 	space = doc.wiki_space

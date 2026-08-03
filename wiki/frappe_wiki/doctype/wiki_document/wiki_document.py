@@ -365,7 +365,6 @@ class WikiDocument(NestedSet):
 		from wiki.permissions import (
 			_ancestor_owner_only_blocks,
 			_document_owner_only_blocks,
-			_is_manager,
 			can_read_space,
 			can_write_space,
 		)
@@ -380,10 +379,11 @@ class WikiDocument(NestedSet):
 
 		# Document-level Owner Only applies regardless of whether the document
 		# belongs to a space (orphan documents can be Owner Only too). An
-		# ancestor group's Owner Only flag blocks the same way.
-		if not _is_manager(user) and (
-			_document_owner_only_blocks(self, user) or _ancestor_owner_only_blocks(self, user)
-		):
+		# ancestor group's Owner Only flag blocks the same way. Both helpers
+		# already let Admin/Administrator and the owner through -- no separate
+		# manager bypass here (System Manager/Wiki Manager no longer see
+		# through Owner Only just by holding that role).
+		if _document_owner_only_blocks(self, user) or _ancestor_owner_only_blocks(self, user):
 			frappe.throw(_("Page not found"), frappe.DoesNotExistError)
 
 	def check_guest_access(self):

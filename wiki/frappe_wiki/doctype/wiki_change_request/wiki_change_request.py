@@ -639,7 +639,7 @@ def archive_change_request(name: str) -> None:
 
 @frappe.whitelist()
 def get_cr_tree(name: str) -> dict[str, Any]:
-	from wiki.permissions import _ancestor_owner_only_blocks, _document_owner_only_blocks, _is_manager
+	from wiki.permissions import _ancestor_owner_only_blocks, _document_owner_only_blocks
 
 	cr = frappe.get_doc("Wiki Change Request", name)
 	cr.check_permission("read")
@@ -717,10 +717,11 @@ def get_cr_tree(name: str) -> dict[str, Any]:
 		"""Drop Owner Only nodes (and their whole subtree) for a non-owner/non-admin.
 
 		Drafted-but-not-yet-inserted items have no document_name, hence nothing
-		to check, and stay visible -- they can't be Owner Only yet.
+		to check, and stay visible -- they can't be Owner Only yet. No separate
+		manager bypass here: System Manager/Wiki Manager no longer see through
+		Owner Only just by holding that role -- only Admin/Administrator do,
+		already handled inside the two block-check helpers below.
 		"""
-		if _is_manager(user):
-			return nodes
 		filtered_nodes = []
 		for node in nodes:
 			if node.get("document_name") and (
@@ -750,8 +751,11 @@ def get_cr_tree(name: str) -> dict[str, Any]:
 
 @frappe.whitelist()
 def get_cr_page(name: str, doc_key: str) -> dict[str, Any]:
+	from wiki.permissions import _ancestor_owner_only_blocks, _document_owner_only_blocks
+
 	cr = frappe.get_doc("Wiki Change Request", name)
 	cr.check_permission("read")
+	user = frappe.session.user
 
 	_item_fields = [
 		"doc_key",
@@ -790,11 +794,30 @@ def get_cr_page(name: str, doc_key: str) -> dict[str, Any]:
 	if not item or item.get("is_deleted"):
 		frappe.throw(_("Document not found in change request"))
 
+	doc_name = frappe.db.get_value("Wiki Document", {"doc_key": doc_key}, "name")
+
+	# Owner Only isn't part of the draft/CR item model (it's a direct-save
+	# field on the live Wiki Document), so it has to be checked separately
+	# here -- this is the endpoint that actually returns a page's content,
+	# and get_cr_tree filtering it out of the sidebar doesn't stop a client
+	# that already has the doc_key from fetching it directly.
+	if doc_name:
+		doc_row = frappe.get_all(
+			"Wiki Document",
+			filters={"name": doc_name},
+			fields=["owner_only", "owner", "parent_wiki_document"],
+			limit=1,
+		)
+		doc_row = doc_row[0] if doc_row else None
+		if doc_row and (
+			_document_owner_only_blocks(doc_row, user) or _ancestor_owner_only_blocks(doc_row, user)
+		):
+			frappe.throw(_("Document not found in change request"))
+
 	content = ""
 	if item.get("content_blob"):
 		content = frappe.get_value("Wiki Content Blob", item.get("content_blob"), "content") or ""
 
-	doc_name = frappe.db.get_value("Wiki Document", {"doc_key": doc_key}, "name")
 	return {
 		"doc_key": item.get("doc_key"),
 		"title": item.get("title"),

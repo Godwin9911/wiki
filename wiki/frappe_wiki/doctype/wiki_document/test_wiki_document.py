@@ -2367,6 +2367,17 @@ class TestSpaceUrlFirstPage(WikiDocumentTestBase):
 
 
 class TestWikiTreeCache(WikiDocumentTestBase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		from wiki.test_permissions import _ensure_role, _ensure_user
+
+		_ensure_role("Admin")
+		cls.tree_owner = _ensure_user("tree_owner@example.com", ["Wiki User"])
+		cls.tree_other = _ensure_user("tree_other@example.com", ["Wiki User"])
+		cls.tree_admin = _ensure_user("tree_admin@example.com", ["Admin"])
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+
 	def test_tree_is_cached_and_busted_on_document_update(self):
 		from wiki.frappe_wiki.doctype.wiki_document.wiki_document import (
 			WIKI_TREE_CACHE_KEY,
@@ -2377,7 +2388,10 @@ class TestWikiTreeCache(WikiDocumentTestBase):
 		page = create_test_wiki_document(self, "TreeCache Page", parent=root.name, slug="tc-page")
 		create_test_wiki_space(self, "TreeCache Space", "tc-space", root.name)
 
-		tree = get_public_wiki_tree(root.name)
+		# A plain, non-privileged viewer: Admin/Administrator always bypass the
+		# shared cache now (see get_public_wiki_tree), so exercising the cache
+		# specifically needs a viewer who doesn't.
+		tree = get_public_wiki_tree(root.name, user=self.tree_other)
 		self.assertEqual(tree[0]["title"], "TreeCache Page")
 		self.assertIsNotNone(frappe.cache().hget(WIKI_TREE_CACHE_KEY, root.name))
 
@@ -2385,7 +2399,7 @@ class TestWikiTreeCache(WikiDocumentTestBase):
 		page.save()
 
 		self.assertIsNone(frappe.cache().hget(WIKI_TREE_CACHE_KEY, root.name))
-		tree = get_public_wiki_tree(root.name)
+		tree = get_public_wiki_tree(root.name, user=self.tree_other)
 		self.assertEqual(tree[0]["title"], "TreeCache Page Renamed")
 
 	def test_tree_cache_busted_on_reorder(self):
@@ -2400,7 +2414,8 @@ class TestWikiTreeCache(WikiDocumentTestBase):
 		page_b = create_test_wiki_document(self, "Reorder B", parent=root.name, sort_order=1, slug="tcr-b")
 		create_test_wiki_space(self, "TreeCache RSpace", "tcr-space", root.name)
 
-		tree = get_public_wiki_tree(root.name)
+		# A plain, non-privileged viewer -- see test_tree_is_cached_and_busted_on_document_update.
+		tree = get_public_wiki_tree(root.name, user=self.tree_other)
 		self.assertEqual([n["title"] for n in tree], ["Reorder A", "Reorder B"])
 
 		reorder_wiki_documents(
@@ -2411,7 +2426,7 @@ class TestWikiTreeCache(WikiDocumentTestBase):
 		)
 
 		self.assertIsNone(frappe.cache().hget(WIKI_TREE_CACHE_KEY, root.name))
-		tree = get_public_wiki_tree(root.name)
+		tree = get_public_wiki_tree(root.name, user=self.tree_other)
 		self.assertEqual([n["title"] for n in tree], ["Reorder B", "Reorder A"])
 
 	def test_owner_only_group_removed_with_its_subtree_not_orphaned(self):
@@ -2435,12 +2450,63 @@ class TestWikiTreeCache(WikiDocumentTestBase):
 		)
 		create_test_wiki_space(self, "OwnerOnlyTree Space", "ooht-space", root.name)
 
-		tree = get_public_wiki_tree(root.name)
+		# A plain viewer -- not the group's owner, no Owner Only bypass.
+		tree = get_public_wiki_tree(root.name, user=self.tree_other)
 		titles = _all_titles(tree)
 		self.assertNotIn("Hidden Group", titles)
 		self.assertNotIn("Child Of Hidden Group", titles)
 		# In particular, the child must not have leaked in as a root sibling.
 		self.assertEqual(tree, [])
+
+	def test_owner_only_node_visible_to_admin_and_owner_not_others(self):
+		"""Regression: the sidebar tree used to hide Owner Only nodes from
+		literally everyone, including Admin/Administrator and the node's own
+		owner -- so a page could be inaccessible from navigation even to the
+		person who set the flag. Admin and the owner must see it; anyone else
+		still gets the pruned tree."""
+
+		def _all_titles(nodes):
+			titles = []
+			for node in nodes:
+				titles.append(node["title"])
+				titles.extend(_all_titles(node["children"]))
+			return titles
+
+		root = create_test_wiki_document(self, "OwnerVisibleTree Root", is_group=True)
+		owned_page = create_test_wiki_document(
+			self, "Owner Only Page", parent=root.name, slug="ovt-page"
+		)
+		frappe.db.set_value("Wiki Document", owned_page.name, "owner_only", 1)
+		frappe.db.set_value("Wiki Document", owned_page.name, "owner", self.tree_owner)
+		create_test_wiki_space(self, "OwnerVisibleTree Space", "ovt-space", root.name)
+
+		self.assertIn("Owner Only Page", _all_titles(get_public_wiki_tree(root.name, user=self.tree_admin)))
+		self.assertIn("Owner Only Page", _all_titles(get_public_wiki_tree(root.name, user=self.tree_owner)))
+		self.assertNotIn("Owner Only Page", _all_titles(get_public_wiki_tree(root.name, user=self.tree_other)))
+
+	def test_owner_aware_tree_does_not_leak_into_shared_cache(self):
+		"""The Admin/owner-aware rebuild is deliberately uncached (see
+		get_public_wiki_tree) -- it must never overwrite the shared Redis entry
+		with a privileged view that a plain viewer would then get served."""
+		from wiki.frappe_wiki.doctype.wiki_document.wiki_document import WIKI_TREE_CACHE_KEY
+
+		root = create_test_wiki_document(self, "NoLeakTree Root", is_group=True)
+		hidden_page = create_test_wiki_document(
+			self, "No Leak Hidden Page", parent=root.name, slug="nlt-page"
+		)
+		frappe.db.set_value("Wiki Document", hidden_page.name, "owner_only", 1)
+		frappe.db.set_value("Wiki Document", hidden_page.name, "owner", self.tree_owner)
+		create_test_wiki_space(self, "NoLeakTree Space", "nlt-space", root.name)
+
+		# Trigger the uncached, owner-aware rebuild first.
+		admin_tree = get_public_wiki_tree(root.name, user=self.tree_admin)
+		self.assertEqual([n["title"] for n in admin_tree], ["No Leak Hidden Page"])
+
+		# The shared cache entry (populated by a plain viewer's request) must
+		# still be the fully-pruned public tree.
+		other_tree = get_public_wiki_tree(root.name, user=self.tree_other)
+		self.assertEqual(other_tree, [])
+		self.assertEqual(frappe.cache().hget(WIKI_TREE_CACHE_KEY, root.name), [])
 
 
 class TestSearchPublishGating(WikiDocumentTestBase):

@@ -29,3 +29,6 @@ screenshots/
 # real template with live dials. Handy while iterating, not something to ship.
 wiki/www/og_playground.py
 wiki/www/og_playground.html
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

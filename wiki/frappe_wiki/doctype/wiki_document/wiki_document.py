@@ -760,7 +760,15 @@ def build_markdown_response(doc) -> Response:
 	return response
 
 
-def build_nested_wiki_tree(documents: list[str]):
+def build_nested_wiki_tree(documents: list[str], user=None):
+	"""Build the sidebar tree for `documents`, pruning Owner Only nodes `user` can't see.
+
+	`user=None` (the default) prunes for everyone -- this is the shared, publicly
+	cached tree. Pass an explicit `user` to instead prune relative to that
+	viewer's own bypass/ownership (see `get_public_wiki_tree`).
+	"""
+	from wiki.permissions import _owner_only_bypass
+
 	# Create a mapping of document name to document data
 	wiki_documents = frappe.db.get_all(
 		"Wiki Document",
@@ -776,6 +784,7 @@ def build_nested_wiki_tree(documents: list[str]):
 			"is_external_link",
 			"external_url",
 			"owner_only",
+			"owner",
 		],
 		filters={"name": ("in", documents)},
 		or_filters={"is_published": 1, "is_group": 1},
@@ -797,14 +806,29 @@ def build_nested_wiki_tree(documents: list[str]):
 			# This is a root node (parent not in our dataset)
 			root_nodes.append(doc_map[doc["name"]])
 
-	# Drop Owner Only nodes and, since they're still nested inside their
-	# parent's "children" here (unlike the old owner_only!=1 SQL filter, which
-	# dropped only the row itself and let its children leak in as orphaned
-	# roots), their whole subtree goes with them.
+	# Drop Owner Only nodes `user` can't see and, since they're still nested
+	# inside their parent's "children" here (unlike the old owner_only!=1 SQL
+	# filter, which dropped only the row itself and let its children leak in
+	# as orphaned roots), their whole subtree goes with them.
+	#
+	# `user is None` means "the shared public tree" -- every Owner Only node is
+	# blocked unconditionally, without consulting frappe.session.user (unlike
+	# `_owner_only_bypass`, which treats a falsy user as "use the current
+	# session" -- wrong here, since this tree is cached and shared across
+	# whoever's request happens to trigger a rebuild).
+	def blocked_for_viewer(node):
+		if not node.get("owner_only"):
+			return False
+		if user is None:
+			return True
+		if node.get("owner") == user:
+			return False
+		return not _owner_only_bypass(user)
+
 	def prune_owner_only(nodes):
 		filtered_nodes = []
 		for node in nodes:
-			if node.get("owner_only"):
+			if blocked_for_viewer(node):
 				continue
 			node["children"] = prune_owner_only(node["children"])
 			filtered_nodes.append(node)
@@ -852,12 +876,32 @@ def build_nested_wiki_tree(documents: list[str]):
 	return remove_empty_groups(root_nodes)
 
 
-def get_public_wiki_tree(root_group: str) -> list:
-	"""Return the published sidebar tree for a root group, cached in Redis.
+def get_public_wiki_tree(root_group: str, user=None) -> list:
+	"""Return the sidebar tree for a root group, for `user` (default: the current session).
 
-	The cache is invalidated on any Wiki Document change (see
-	clear_wiki_tree_cache), so a hit always reflects the committed tree.
+	The base tree -- no Owner Only nodes at all -- is cached in Redis and shared
+	across every viewer; this is the fast path almost everyone takes. The cache
+	is invalidated on any Wiki Document change (see clear_wiki_tree_cache), so a
+	hit always reflects the committed tree.
+
+	Owner Only nodes are otherwise pruned for everyone (see
+	build_nested_wiki_tree), which hid them from their own owner and from
+	Admin/Administrator too. A viewer who bypasses Owner Only, or who owns at
+	least one Owner Only document, skips the shared cache and gets a tree
+	rebuilt just for them instead -- uncached, since it's specific to who's
+	asking, but that's a rare path (Admins and page owners), not the common case.
 	"""
+	from wiki.permissions import _owner_only_bypass
+
+	user = user or frappe.session.user
+	needs_owner_aware_tree = user not in (None, "Guest") and (
+		_owner_only_bypass(user) or frappe.db.exists("Wiki Document", {"owner": user, "owner_only": 1})
+	)
+
+	if needs_owner_aware_tree:
+		descendants = get_descendants_of("Wiki Document", root_group, ignore_permissions=True)
+		return build_nested_wiki_tree(descendants, user=user)
+
 	tree = frappe.cache().hget(WIKI_TREE_CACHE_KEY, root_group)
 	if tree is None:
 		descendants = get_descendants_of("Wiki Document", root_group, ignore_permissions=True)

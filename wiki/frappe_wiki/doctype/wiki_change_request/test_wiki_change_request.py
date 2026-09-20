@@ -2413,6 +2413,71 @@ class TestWikiChangeRequestOGWarmup(FrappeTestCase):
 		self.assertEqual(og_jobs, [])
 
 
+class TestWikiChangeRequestWebhooks(FrappeTestCase):
+	"""Frappe Webhooks are enqueued from Document.run_method, which the
+	content-only merge fast path (raw db.set_value) never reaches -- so a Publish
+	that only edited page content notified nobody.
+	"""
+
+	WEBHOOK_JOB = "frappe.integrations.doctype.webhook.webhook.enqueue_webhook"
+
+	def setUp(self):
+		frappe.get_doc(
+			{
+				"doctype": "Webhook",
+				"webhook_doctype": "Wiki Document",
+				"webhook_docevent": "on_update",
+				"request_url": "https://example.com/wiki-hook",
+				"enabled": 1,
+			}
+		).insert()
+		self._reset_webhook_state()
+
+	def tearDown(self):
+		frappe.db.rollback()
+		self._reset_webhook_state()
+
+	def _reset_webhook_state(self):
+		# run_webhooks memoizes the enabled-webhook map on frappe.flags and in
+		# Redis, and dedupes per doc per request. Fixture inserts fire the webhook
+		# too, so this also runs right before the merge under test.
+		frappe.flags.webhooks = None
+		frappe.flags.webhooks_executed = None
+		frappe.cache().delete_value("webhooks")
+
+	def _merge(self, cr):
+		submit_change_request(cr.name)
+		self._reset_webhook_state()
+		with patch("frappe.enqueue") as enqueue:
+			_approve_and_merge(cr.name)
+		return [call for call in enqueue.call_args_list if call.args[0] == self.WEBHOOK_JOB]
+
+	def test_content_only_merge_fires_the_webhook(self):
+		space = create_test_wiki_space()
+		page = create_test_wiki_document(space.root_group, title="Stable Title", content="v1")
+		cr = create_change_request(space.name, "CR webhook content")
+		page_key = frappe.get_value("Wiki Document", page.name, "doc_key")
+		update_cr_page(cr.name, page_key, {"content": "v2"})
+
+		jobs = self._merge(cr)
+
+		self.assertEqual(len(jobs), 1)
+		self.assertEqual(jobs[0].kwargs["doc"].name, page.name)
+		self.assertEqual(jobs[0].kwargs["doc"].content, "v2")
+
+	def test_structural_merge_fires_the_webhook_once(self):
+		space = create_test_wiki_space()
+		page = create_test_wiki_document(space.root_group, title="Old Title")
+		cr = create_change_request(space.name, "CR webhook rename")
+		page_key = frappe.get_value("Wiki Document", page.name, "doc_key")
+		update_cr_page(cr.name, page_key, {"title": "New Title"})
+
+		jobs = self._merge(cr)
+
+		self.assertEqual(len(jobs), 1)
+		self.assertEqual(jobs[0].kwargs["doc"].name, page.name)
+
+
 class TestWikiChangeRequestTabs(FrappeTestCase):
 	"""Tab flags round-tripping through the change-request machinery.
 

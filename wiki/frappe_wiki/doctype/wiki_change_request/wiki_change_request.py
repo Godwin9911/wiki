@@ -2017,6 +2017,23 @@ def _classify_changes(
 	return content_only, structural, added, deleted
 
 
+def _run_webhooks_for_content_merge(names: list[str]) -> None:
+	"""Fire Frappe Webhooks for documents the content-only fast path wrote raw.
+
+	Webhook deliveries are enqueued from Document.run_method, which a raw
+	db.set_value never reaches, so a Publish that only edits page content would
+	otherwise never notify subscribers. Only webhooks are replayed, not the full
+	on_update hooks: the tree/website/OG caches don't depend on content.
+	"""
+	from frappe.integrations.doctype.webhook import run_webhooks
+
+	for name in names:
+		# Loaded after the set_value, so the payload carries the merged content.
+		doc = frappe.get_doc("Wiki Document", name)
+		run_webhooks(doc, "on_update")
+		run_webhooks(doc, "on_change")
+
+
 def _apply_merge_changes_only(
 	space: Document,
 	merge_revision: Document,
@@ -2095,6 +2112,7 @@ def _apply_merge_changes_only(
 			clear_wiki_content_cache(name)
 
 		enqueue_reindex(content_updated_names)
+		_run_webhooks_for_content_merge(content_updated_names)
 
 	# Structural changes and additions need full save (process in tree order)
 	full_save_keys = structural_keys | added_keys
